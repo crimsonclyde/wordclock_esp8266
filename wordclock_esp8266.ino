@@ -21,7 +21,11 @@
  * 
  */
 
-#include "secrets.h"                    // rename the file example_secrets.h to secrets.h after cloning the project. More information in README.md
+#if __has_include("secrets.h")
+#include "secrets.h"
+#else
+#include "secrets_example.h" // WiFiManager needs no hard-coded router credentials.
+#endif
 #include <LittleFS.h>
 #include <Adafruit_GFX.h>               // https://github.com/adafruit/Adafruit-GFX-Library
 #include <Adafruit_NeoMatrix.h>         // https://github.com/adafruit/Adafruit_NeoMatrix
@@ -36,6 +40,8 @@
 #include <EEPROM.h>                     //from ESP8266 Arduino Core (automatically installed when ESP8266 was installed via Boardmanager)
 
 // own libraries
+#include "wordclock_config.h"
+#include "clock_schedule.h"
 #include "udplogger.h"
 #include "ntp_client_plus.h"
 #include "ledmatrix.h"
@@ -57,6 +63,7 @@
 #define ADR_MC_RED 20
 #define ADR_MC_GREEN 22
 #define ADR_MC_BLUE 24
+#define ADR_STARTUP_TEST 28
 
 
 #define NEOPIXELPIN 5       // pin to which the NeoPixels are attached
@@ -81,6 +88,8 @@
 
 #define SHORTPRESS 100
 #define LONGPRESS 2000
+#define WIFI_SETUP_PRESS 8000
+#define PERIOD_WIFI_RECONNECT 30000
 
 #define CURRENT_LIMIT_LED 2500 // limit the total current sonsumed by LEDs (mA)
 
@@ -171,14 +180,14 @@ uint8_t brightness = 40;            // current brightness of leds
 bool sprialDir = false;
 
 // timestamp variables
-long lastheartbeat = millis();      // time of last heartbeat sending
-long lastStep = millis();           // time of last animation step
-long lastLEDdirect = 0;             // time of last direct LED command (=> fall back to normal mode after timeout)
-long lastStateChange = millis();    // time of last state change
-long lastNTPUpdate = millis() - (PERIOD_NTPUPDATE-5000);  // time of last NTP update
-long lastAnimationStep = millis();  // time of last Matrix update
-long lastNightmodeCheck = millis(); // time of last nightmode check
-long buttonPressStart = 0;          // time of push button press start 
+uint32_t lastheartbeat = millis();      // time of last heartbeat sending
+uint32_t lastStep = millis();           // time of last animation step
+uint32_t lastLEDdirect = 0;             // time of last direct LED command (=> fall back to normal mode after timeout)
+uint32_t lastStateChange = millis();    // time of last state change
+uint32_t lastNTPUpdate = millis() - (PERIOD_NTPUPDATE-5000);  // time of last NTP update
+uint32_t lastAnimationStep = millis();  // time of last Matrix update
+uint32_t lastNightmodeCheck = millis(); // time of last nightmode check
+uint32_t buttonPressStart = 0;          // time of push button press start
 
 // Create necessary global objects
 UDPLogger logger;
@@ -203,8 +212,14 @@ int nightModeStartMin = 0;
 int nightModeEndHour = 7;
 int nightModeEndMin = 0;
 
-// Watchdog counter to trigger restart if NTP update was not possible 30 times in a row (5min)
-int watchdogCounter = 30;
+bool startupLEDTest = true;
+bool ntpStarted = false;
+bool otaStarted = false;
+bool webServerRunning = false;
+bool wasWiFiConnected = false;
+bool scheduleInitialized = false;
+bool scheduledNight = false;
+uint32_t lastWiFiReconnect = 0;
 
 // ----------------------------------------------------------------------------------
 //                                        SETUP
@@ -223,6 +238,7 @@ void setup() {
 
   // Load color for clock from EEPROM
   loadMainColor();
+  startupLEDTest = EEPROM.read(ADR_STARTUP_TEST) != 0;
 
   // configure button pin as input
   pinMode(BUTTONPIN, INPUT_PULLUP);
@@ -250,11 +266,15 @@ void setup() {
   // fetches ssid and pass from eeprom and tries to connect
   // if it does not connect it starts an access point with the specified name
   // here "wordclockAP"
-  // and goes into a blocking loop awaiting configuration
+  // Configuration runs in the main loop so the display and button stay responsive.
+  WiFi.hostname(hostname.c_str());
+  WiFi.setAutoReconnect(true);
+  wifiManager.setConnectTimeout(10);
+  wifiManager.setConfigPortalBlocking(false);
+  wifiManager.setConfigPortalTimeout(180);
   wifiManager.autoConnect(AP_SSID);
 
-  // if you get here you have connected to the WiFi
-  Serial.println("Connected.");
+  Serial.println(WiFi.status() == WL_CONNECTED ? "Connected." : "WiFi setup open.");
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP()); 
 
@@ -320,16 +340,25 @@ void setup() {
   setupFS();
 
   // setup OTA
-  setupOTA(hostname);
+  if(WiFi.status() == WL_CONNECTED){
+    setupOTA(hostname);
+    otaStarted = true;
+  }
 
   server.on("/cmd", handleCommand); // process commands
   server.on("/data", handleDataRequest); // process datarequests
   server.on("/leddirect", HTTP_POST, handleLEDDirect); // Call the 'handleLEDDirect' function when a POST request is made to URI "/leddirect"
-  server.begin();
+  if(!wifiManager.getConfigPortalActive()){
+    server.begin();
+    webServerRunning = true;
+  }
   
   // create UDP Logger to send logging messages via UDP multicast
-  logger = UDPLogger(WiFi.localIP(), logMulticastIP, logMulticastPort);
+  if(WiFi.status() == WL_CONNECTED){
+    logger = UDPLogger(WiFi.localIP(), logMulticastIP, logMulticastPort);
+  }
   logger.setName("Wordclock 2.0");
+  logger.logString("Firmware " WORDCLOCK_VERSION " / " WORDCLOCK_LANGUAGE_NAME);
   logger.logString("Start program\n");
   delay(10);
   logger.logString("Sketchname: "+ String(__FILE__));
@@ -341,20 +370,24 @@ void setup() {
   logger.logString("Reset Reason: " + ESP.getResetReason());
 
   if(!ESP.getResetReason().equals("Software/System restart")){
-    // test quickly each LED
-    for(int r = 0; r < HEIGHT; r++){
-        for(int c = 0; c < WIDTH; c++){
-        matrix.fillScreen(0);
-        matrix.drawPixel(c, r, LEDMatrix::color24to16bit(colors24bit[2]));
-        matrix.show();
-        delay(10); 
-        }
+    // The IP display below is always retained; only this sweep is optional.
+    if(startupLEDTest){
+      // test quickly each LED
+      for(int r = 0; r < HEIGHT; r++){
+          for(int c = 0; c < WIDTH; c++){
+          matrix.fillScreen(0);
+          matrix.drawPixel(c, r, LEDMatrix::color24to16bit(colors24bit[2]));
+          matrix.show();
+          delay(10);
+          }
+      }
+
+      // clear Matrix
+      matrix.fillScreen(0);
+      matrix.show();
+      delay(200);
+
     }
-    
-    // clear Matrix
-    matrix.fillScreen(0);
-    matrix.show();
-    delay(200);
 
     // display IP
     uint8_t address = WiFi.localIP()[3];
@@ -372,19 +405,11 @@ void setup() {
   }
 
   // setup NTP
-  ntp.setupNTPClient();
-  logger.logString("NTP running");
-  logger.logString("Time: " +  ntp.getFormattedTime());
-  logger.logString("TimeOffset (seconds): " + String(ntp.getTimeOffset()));
-
-  // show the current time for short time in words
-  int hours = ntp.getHours24();
-  int minutes = ntp.getMinutes();
-  String timeMessage = timeToString(hours, minutes);
-  showStringOnClock(timeMessage, maincolor_clock);
-  drawMinuteIndicator(minutes, maincolor_clock);
-  ledmatrix.drawOnMatrixSmooth(filterFactor);
-
+  if(WiFi.status() == WL_CONNECTED){
+    ntp.setupNTPClient();
+    ntpStarted = true;
+  }
+  logger.logString(ntp.hasValidTime() ? "Time synchronized" : "Waiting for first time sync");
 
   // init all animation modes
   // init snake
@@ -411,7 +436,20 @@ void setup() {
   if(brightness < 10) brightness = 10;
   logger.logString("Brightness: " + String(brightness));
   ledmatrix.setBrightness(brightness);
-  
+  applyNightSchedule();
+  // Restore the display after animation initialization, including while offline.
+  ledmatrix.gridFlush();
+  if(!nightMode){
+    if(ntp.hasValidTime()){
+      showStringOnClock(timeToString(ntp.getHours24(), ntp.getMinutes()), maincolor_clock);
+      drawMinuteIndicator(ntp.getMinutes(), maincolor_clock);
+    }else{
+      ledmatrix.setMinIndicator(15, colors24bit[6]);
+    }
+  }
+  ledmatrix.drawOnMatrixInstant();
+  // Render promptly when entering the main loop.
+  lastStep = millis() - PERIOD_TIMEVISUUPDATE - 1;
 }
 
 
@@ -420,23 +458,19 @@ void setup() {
 // ----------------------------------------------------------------------------------
 
 void loop() {
+  handleNetwork();
   // handle OTA
-  handleOTA();
+  if(otaStarted) handleOTA();
   
   // handle Webserver
-  server.handleClient();
+  if(webServerRunning) server.handleClient();
 
   // send regularly heartbeat messages via UDP multicast
   if(millis() - lastheartbeat > PERIOD_HEARTBEAT){
     logger.logString("Heartbeat, state: " + stateNames[currentState] + ", FreeHeap: " + ESP.getFreeHeap() + ", HeapFrag: " + ESP.getHeapFragmentation() + ", MaxFreeBlock: " + ESP.getMaxFreeBlockSize() + "\n");
     lastheartbeat = millis();
 
-    // Check wifi status (only if no apmode)
-    if(!apmode && WiFi.status() != WL_CONNECTED){
-      Serial.println("connection lost");
-      ledmatrix.gridAddPixel(0, 5, colors24bit[1]);
-      ledmatrix.drawOnMatrixInstant();
-    }
+
   }
 
   // handle mode behaviours (trigger loopCycles of different modes depending on current mode)
@@ -445,6 +479,11 @@ void loop() {
       // state clock
       case st_clock:
         {
+          if(!ntp.hasValidTime()){
+            ledmatrix.gridFlush();
+            ledmatrix.setMinIndicator(15, colors24bit[6]);
+            break;
+          }
           int hours = ntp.getHours24();
           int minutes = ntp.getMinutes();
           showStringOnClock(timeToString(hours, minutes), maincolor_clock);
@@ -454,6 +493,11 @@ void loop() {
       // state diclock
       case st_diclock:
         {
+          if(!ntp.hasValidTime()){
+            ledmatrix.gridFlush();
+            ledmatrix.setMinIndicator(15, colors24bit[6]);
+            break;
+          }
           int hours = ntp.getHours24();
           int minutes = ntp.getMinutes();
           showDigitalClock(hours, minutes, maincolor_clock);
@@ -533,64 +577,29 @@ void loop() {
     lastStateChange = millis();
   }
 
-  // NTP time update
-  if(millis() - lastNTPUpdate > PERIOD_NTPUPDATE){
-    int res = ntp.updateNTP();
-    if(res == 0){
+  // A failed sync leaves the last valid time ticking; retry without rebooting.
+  if(WiFi.status() == WL_CONNECTED && millis() - lastNTPUpdate >= PERIOD_NTPUPDATE){
+    lastNTPUpdate = millis();
+    if(!ntpStarted){
+      ntp.setupNTPClient();
+      ntpStarted = true;
+    }else{
+      int result = ntp.updateNTP();
+      logger.logString(result == 0 ? "NTP-Update successful" : "NTP unavailable; keeping last valid time");
+    }
+    if(ntp.hasValidTime()){
       ntp.calcDate();
-      logger.logString("NTP-Update successful");
-      logger.logString("Time: " +  ntp.getFormattedTime());
-      logger.logString("Date: " +  ntp.getFormattedDate());
-      logger.logString("Day of Week (Mon=1, Sun=7): " +  String(ntp.getDayOfWeek()));
-      logger.logString("TimeOffset (seconds): " + String(ntp.getTimeOffset()));
-      logger.logString("Summertime: " + String(ntp.updateSWChange()));
-      lastNTPUpdate = millis();
-      watchdogCounter = 30;
+      logger.logString("Time: " + ntp.getFormattedTime());
+      applyNightSchedule();
     }
-    else if(res == -1){
-      logger.logString("NTP-Update not successful. Reason: Timeout");
-      lastNTPUpdate += 10000;
-      watchdogCounter--;
-    }
-    else if(res == 1){
-      logger.logString("NTP-Update not successful. Reason: Too large time difference");
-      logger.logString("Time: " +  ntp.getFormattedTime());
-      logger.logString("Date: " +  ntp.getFormattedDate());
-      logger.logString("Day of Week (Mon=1, Sun=7): " +  ntp.getDayOfWeek());
-      logger.logString("TimeOffset (seconds): " + String(ntp.getTimeOffset()));
-      logger.logString("Summertime: " + String(ntp.updateSWChange()));
-      lastNTPUpdate += 10000;
-      watchdogCounter--;
-    }
-    else {
-      logger.logString("NTP-Update not successful. Reason: NTP time not valid (<1970)");
-      lastNTPUpdate += 10000;
-      watchdogCounter--;
-    }
-
-    logger.logString("Watchdog Counter: " + String(watchdogCounter));
-    if(watchdogCounter <= 0){
-        logger.logString("Trigger restart due to watchdog...");
-        delay(100);
-        ESP.restart();
-    }
-    
   }
 
-  // check if nightmode need to be activated
-  if(millis() - lastNightmodeCheck > PERIOD_NIGHTMODECHECK){
-    int hours = ntp.getHours24();
-    int minutes = ntp.getMinutes();
-    
-    if(hours == nightModeStartHour && minutes == nightModeStartMin){
-      setNightmode(true);
-    }
-    else if(hours == nightModeEndHour && minutes == nightModeEndMin){
-      setNightmode(false);
-    }
-    
+  if(millis() - lastNightmodeCheck >= PERIOD_NIGHTMODECHECK){
     lastNightmodeCheck = millis();
+    if(ntp.hasValidTime()) ntp.calcDate();
+    applyNightSchedule();
   }
+
  
 }
 
@@ -598,6 +607,56 @@ void loop() {
 // ----------------------------------------------------------------------------------
 //                                        OTHER FUNCTIONS
 // ----------------------------------------------------------------------------------
+
+// Manual night-mode changes last until the next scheduled boundary.
+void applyNightSchedule(bool force){
+  if(!ntp.hasValidTime()) return;
+  bool desired = isNightTime(ntp.getHours24() * 60 + ntp.getMinutes(),
+      nightModeStartHour * 60 + nightModeStartMin,
+      nightModeEndHour * 60 + nightModeEndMin);
+  if(!scheduleInitialized || force || desired != scheduledNight){
+    setNightmode(desired);
+  }
+  scheduledNight = desired;
+  scheduleInitialized = true;
+}
+
+void openWiFiSetup(){
+  if(wifiManager.getConfigPortalActive()) return;
+  // WiFiManager and the normal UI both use port 80; run only one at a time.
+  if(webServerRunning){
+    server.stop();
+    webServerRunning = false;
+  }
+  wifiManager.startConfigPortal(AP_SSID);
+  logger.logString("WiFi setup: connect to " + String(AP_SSID) + " and open 192.168.4.1");
+}
+
+void handleNetwork(){
+  wifiManager.process();
+  bool connected = WiFi.status() == WL_CONNECTED;
+  if(connected && !wasWiFiConnected){
+    logger = UDPLogger(WiFi.localIP(), logMulticastIP, logMulticastPort);
+    logger.setName("Wordclock 2.0");
+    logger.logString("WiFi connected: " + WiFi.localIP().toString());
+    if(!otaStarted){
+      setupOTA(hostname);
+      otaStarted = true;
+    }
+    lastNTPUpdate = millis() - PERIOD_NTPUPDATE;
+  }
+  wasWiFiConnected = connected;
+  if(!wifiManager.getConfigPortalActive()){
+    if(!webServerRunning){
+      server.begin();
+      webServerRunning = true;
+    }
+    if(!connected && millis() - lastWiFiReconnect >= PERIOD_WIFI_RECONNECT){
+      lastWiFiReconnect = millis();
+      WiFi.reconnect();
+    }
+  }
+}
 
 /**
  * @brief call entry action of given state
@@ -722,17 +781,25 @@ void handleLEDDirect() {
  */
 void handleButton(){
   static bool lastButtonState = false;
+  static bool setupTriggered = false;
   bool buttonPressed = !digitalRead(BUTTONPIN);
   // check rising edge
   if(buttonPressed == true && lastButtonState == false){
     // button press start
     logger.logString("Button press started");
     buttonPressStart = millis();
+    setupTriggered = false;
+  }
+  if(buttonPressed && !setupTriggered && millis() - buttonPressStart >= WIFI_SETUP_PRESS){
+    setupTriggered = true;
+    openWiFiSetup();
   }
   // check falling edge
   if(buttonPressed == false && lastButtonState == true){
     // button press ended
-    if((millis() - buttonPressStart) > LONGPRESS){
+    if(setupTriggered){
+      // Do not also toggle night mode after opening WiFi setup.
+    }else if((millis() - buttonPressStart) > LONGPRESS){
       // longpress -> nightmode
       logger.logString("Button press ended - longpress");
 
@@ -859,6 +926,13 @@ void handleCommand() {
     logger.logString("Nightmode ends at: " + String(nightModeEndHour) + ":" + String(nightModeEndMin));
     logger.logString("Brightness: " + String(brightness));
     ledmatrix.setBrightness(brightness);
+    String startupSetting = split(timestr, '-', 5);
+    if(startupSetting == "0" || startupSetting == "1"){
+      startupLEDTest = startupSetting == "1";
+      EEPROM.write(ADR_STARTUP_TEST, startupLEDTest ? 1 : 0);
+      EEPROM.commit();
+    }
+    applyNightSchedule(true);
   }
   else if (server.argName(0) == "resetwifi"){
     wifiManager.resetSettings();
@@ -981,6 +1055,10 @@ void handleDataRequest() {
     String message = "{";
     String keystr = server.arg(0);
     if(keystr == "mode"){
+      message += "\"firmwareVersion\":\"" WORDCLOCK_VERSION "\",";
+      message += "\"language\":\"" WORDCLOCK_LANGUAGE_NAME "\",";
+      message += "\"startupLEDTest\":\"" + String(startupLEDTest ? 1 : 0) + "\",";
+      message += "\"timeValid\":\"" + String(ntp.hasValidTime() ? 1 : 0) + "\",";
       message += "\"mode\":\"" + stateNames[currentState] + "\"";
       message += ",";
       message += "\"modeid\":\"" + String(currentState) + "\"";

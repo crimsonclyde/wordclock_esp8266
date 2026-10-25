@@ -2,3 +2,6 @@ secrets.h
 /.vscode
 /build
 log.txt
+/.pio/
+__pycache__/
+*.pyc

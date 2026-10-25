@@ -61,6 +61,11 @@ int showStringOnClock(String message, uint32_t color){
       index++;
       
       if(word.length() > 0){
+        // At exact hours there is no PAST/TO to move the search beyond
+        // the minute words. Select the hour section before OCLOCK.
+        if(split(message, ' ', index) == "OCLOCK"){
+          lastLetterClock = clockStringEnglish.indexOf("ONE");
+        }
         // find word in clock string
         positionOfWord = clockStringEnglish.indexOf(word, lastLetterClock);
         
@@ -150,19 +155,8 @@ String timeToString(uint8_t hours,uint8_t minutes){
     message += "FIVE MINUTES ";
   }
 
-  //convert hours to 12h format
-  if(hours >= 12)
-  {
-      hours -= 12;
-  }
-  if(minutes >= 30)
-  {
-      hours++;
-  }
-  if(hours == 12)
-  {
-      hours = 0;
-  }
+  // Midnight and noon both use case 0 (TWELVE).
+  hours %= 12;
 
   if(minutes >= 5 && minutes < 35)
   {
@@ -171,6 +165,7 @@ String timeToString(uint8_t hours,uint8_t minutes){
   else if(minutes >= 35 && minutes < 60)
   {
     message += "TO ";
+    // Only "TO" refers to the next hour; "HALF PAST" uses this hour.
     hours = (hours + 1)%12;
   }
 

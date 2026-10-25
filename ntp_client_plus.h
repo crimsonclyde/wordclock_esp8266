@@ -38,11 +38,13 @@ class NTPClientPlus{
         int getMonth(int dayOfYear);
         long getTimeOffset();
         bool updateSWChange();
+        bool hasValidTime() const { return _hasValidTime; }
 
 
     private:
         UDP*          _udp;
         bool          _udpSetup       = false;
+        bool          _hasValidTime   = false;
 
         const char*   _poolServerName = "pool.ntp.org"; // Default time server
         IPAddress     _poolServerIP;

@@ -7,9 +7,70 @@ More details on my website: https://techniccontroller.com/word-clock-with-wifi-a
 
 **Languages**
 
-The Wordclock is available in **German**, **English** and **Italian** language. By default the language is German. 
-To use the English or Italian language please replace the file *wordclockfunctions.ino* with *wordclockfunctions.ino_english* or *wordclockfunctions.ino_italian*.
-The code compiles only with one file named *wordclockfunctions.ino*. So please rename the file you want to use to *wordclockfunctions.ino* and replace the existing file.
+The frontplate determines the language: English, German, or Italian. English is
+selected by default. No sketch files need to be renamed or replaced.
+
+Build with PlatformIO:
+
+```sh
+pio run -e english
+# Other frontplates:
+pio run -e german
+pio run -e italian
+```
+
+The NodeMCU ESP8266 environments pin the platform and library versions and use a
+4 MB flash layout with 2 MB LittleFS. For Arduino IDE builds, use WiFiManager
+2.0.17 and select `WORDCLOCK_LANGUAGE` in `wordclock_config.h`.
+
+The web interface displays the firmware version and selected language. Upload
+both the firmware and updated `data/` files to get the new settings UI. With a USB
+connection, `pio run -e english -t upload` uploads firmware and
+`pio run -e english -t uploadfs` uploads the web files. Uploading the filesystem
+replaces its contents; preserve any custom files first. Builds alone do not
+upload anything. WiFiManager setup works without creating `secrets.h`; an
+existing file is still honored for the AP name.
+
+### Startup and network recovery
+
+The startup LED sweep can be disabled in the web settings. Its setting is saved
+across restarts. **The IP display and its two-second duration are unchanged.**
+
+Button actions:
+
+- Short press: change mode, or leave manual night mode.
+- Hold for 2 seconds and release: enable manual night mode.
+- Hold for 8 seconds: open Wi-Fi setup immediately. Releasing then does not also
+  enable night mode. Existing credentials are retained until a new network is saved.
+
+If the saved network is unavailable at startup, WiFiManager opens `WordclockAP`
+(or the AP name in `secrets.h`). Connect a phone to it and open
+`http://192.168.4.1/` to choose the new 2.4 GHz network. Setup runs without blocking
+the clock loop. The portal closes after three minutes; hold the button for eight
+seconds to reopen it. When the portal is closed, disconnected clocks retry the
+saved network every 30 seconds. While the setup portal is open, the normal clock
+web UI is paused because both use port 80.
+
+For the move to Italy, no reflash or timezone adjustment is required: the existing
+UTC+1 and summer-time configuration applies. The router may assign a different IP.
+
+After the first successful time sync, temporary Wi-Fi or NTP outages leave the
+clock ticking from its last synchronized time, with periodic sync retries and no
+forced restarts. Time can drift offline. After a power loss, it needs a successful
+sync again because there is no battery-backed real-time clock. Until then, clock
+modes show blue minute indicators instead of an invalid time.
+
+Automatic night mode evaluates the entire configured interval, including across
+midnight, and applies after initial sync and after settings changes. Start is
+inclusive and end is exclusive. Equal start and end disables the automatic
+schedule. Manual changes last until the next scheduled boundary.
+
+Run host regression checks with Python 3 and g++:
+
+```sh
+python3 -B -m unittest discover -s tests -v
+```
+
 
 
 ## Features
@@ -34,7 +95,7 @@ The code compiles only with one file named *wordclockfunctions.ino*. So please r
 ## Quickstart
 
 1. Clone the project into the sketch folder of the Arduino IDE, 
-2. Rename the file "example_secrets.h" to "secrets.h". You don't need to change anything in the file if you want to use the normal WiFi setup with WiFiManager (see section "Remark about the WiFi setup").
+2. Select the language in `wordclock_config.h` (English is the default). WiFiManager does not require router credentials in a source file.
 3. Install the additional libraries and upload the program to the ESP8266 as usual (See section [*Upload program to ESP8266*](https://github.com/techniccontroller/wordclock_esp8266/blob/main/README.md#upload-program-to-esp8266-with-arduino-ide) below). 
 4. The implemented WiFiManager helps you to set up a WiFi connection with your home WiFi -> on the first startup it will create a WiFi access point named "WordclockAP". Connect your phone to this access point and follow the steps which will be shown to you. 
 5. After a successful WiFi setup, open the browser and enter the IP address of your ESP8266 to access the interface of the webserver. 
@@ -108,12 +169,10 @@ To program the ESP8266 with the Arduino IDE, you need to install the board infor
 
 ## Remark about the WiFi setup
 
-Regarding the WiFi setting, I have actually implemented two variants: 
-1. By default the WifiManager is activated. That is, the word clock makes the first time its own WiFi (should be called "WordclockAP"). There you connect from a cell phone to `192.168.4.1`* and you can perform the configuration of the WiFi settings conveniently as with a SmartHome devices (Very elegant 😊)
-2. Another (traditional) variant is to define the wifi credentials in the code (in secrets.h). 
-    - For this you have to comment out lines 230 to 251 in the code of the file *wordclock_esp8266.ino* (add /\* before and \*/ after) 
-    - and comment out lines 257 to 305 (remove /\* and \*/)
-(* default IP provided by the WifiMAnager library.)
+WiFiManager is enabled by default. The setup network is `WordclockAP`, and its
+portal address is `http://192.168.4.1/`. Hold the physical button for eight seconds
+to reopen setup when changing routers. Router credentials are stored by the
+ESP8266; they do not need to be compiled into the firmware.
 
 ## Resetting the WiFi configuration
 

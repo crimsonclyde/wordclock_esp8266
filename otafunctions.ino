@@ -6,8 +6,10 @@ void setupOTA(String hostname){
   // Hostname defaults to esp8266-[ChipID]
   ArduinoOTA.setHostname(hostname.c_str());
 
-  // No authentication by default
-  // ArduinoOTA.setPassword("admin");
+  // Keep device-specific upload credentials in the ignored secrets.h file.
+  #ifdef OTA_PASSWORD
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+  #endif
 
   // Password can be set with it's md5 value as well
   // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3

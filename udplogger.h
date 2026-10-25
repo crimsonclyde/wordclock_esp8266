@@ -28,10 +28,10 @@ class UDPLogger{
         String _name;
         IPAddress _multicastAddr;
         IPAddress _interfaceAddr;
-        int _port;
+        int _port = 0;
         WiFiUDP _Udp;
         char _packetBuffer[100];
-        long _lastSend;
+        uint32_t _lastSend = 0;
 };
 
 #endif

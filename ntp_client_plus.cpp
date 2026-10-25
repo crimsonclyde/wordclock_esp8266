@@ -1,4 +1,5 @@
 #include "ntp_client_plus.h"
+#include <cstring>
 
 /**
  * @brief Construct a new NTPClientPlus::NTPClientPlus object
@@ -26,7 +27,7 @@ void NTPClientPlus::setupNTPClient()
     this->_udp->begin(this->_port);
     this->_udpSetup = true;
     this->updateNTP();
-    this->calcDate();
+    if (this->_hasValidTime) this->calcDate();
 }
 
 /**
@@ -57,7 +58,11 @@ int NTPClientPlus::updateNTP()
         timeout++;
     } while (cb == 0);
 
-    this->_udp->read(this->_packetBuffer, NTP_PACKET_SIZE);
+    if (cb < NTP_PACKET_SIZE) {
+        this->_udp->flush();
+        return 2;
+    }
+    if (this->_udp->read(this->_packetBuffer, NTP_PACKET_SIZE) != NTP_PACKET_SIZE) return 2;
 
     unsigned long highWord = word(this->_packetBuffer[40], this->_packetBuffer[41]);
     unsigned long lowWord = word(this->_packetBuffer[42], this->_packetBuffer[43]);
@@ -81,6 +86,8 @@ int NTPClientPlus::updateNTP()
 
         // Remember time of last update
         this->_lastSecsSince1900 = tempSecsSince1900;
+
+        this->_hasValidTime = true;
 
         return 0; // return 0 after successful update
     }

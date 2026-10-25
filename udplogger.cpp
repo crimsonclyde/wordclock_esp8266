@@ -1,4 +1,5 @@
 #include "udplogger.h"
+#include <ESP8266WiFi.h>
 
 UDPLogger::UDPLogger(){
 
@@ -18,11 +19,12 @@ void UDPLogger::setName(String name){
 
 void UDPLogger::logString(String logmessage){
     // wait 5 milliseconds if last send was less than 5 milliseconds before 
-    if(millis() < (_lastSend + 5)){
+    if(millis() - _lastSend < 5){
         delay(5);
     }
     logmessage = _name + ": " + logmessage;
     Serial.println(logmessage);
+    if (_port == 0 || WiFi.status() != WL_CONNECTED) return;
     _Udp.beginPacketMulticast(_multicastAddr, _port, _interfaceAddr);
     logmessage.toCharArray(_packetBuffer, 100);
     _Udp.print(_packetBuffer);

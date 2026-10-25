@@ -243,7 +243,7 @@
 	}
 
 	.show{
-		height: 200px;
+		height: auto;
 		transition: height 1s;
 	}
 
@@ -270,6 +270,7 @@
 		<div class="setting-button" onclick="toggleSettings()"><img src = "./icons/settings.svg" style="height:20px"/></div>
 		
 		<h1 id="headline">WORDCLOCK 2.0</h1>
+		<p id="firmware" style="text-align:center"></p>
 		
 		<div id="settings-container" class="settings-container">
 			<div class="number-container">
@@ -284,6 +285,11 @@
 				<label for="nm_end" style="align-self: flex-start">Nightmode end time: </label>
 				<input type="time" id="nm_end" name="nm_end" min="00:00" max="23:59">
 			</div>
+			<div class="checkbox-container">
+				<label for="StartupLEDTest">Startup LED sweep</label>
+				<div><input id="StartupLEDTest" type="checkbox" class="toggle"></div>
+			</div>
+			<p>The startup IP display is always shown. Hold the clock button for 8 seconds to open Wi-Fi setup.</p>
 			<div class="checkbox-container">
 				<label for="ResetWifi" style="align-self: flex-start">Reset Wifi</label> 
 				<div>
@@ -484,6 +490,10 @@
 					document.getElementById("nm_start").value = myVar.nightModeStart.replace("-", ":");
 					document.getElementById("nm_end").value = myVar.nightModeEnd.replace("-", ":");
 					document.getElementById("brightness").value = parseInt(myVar.brightness);
+					document.getElementById("StartupLEDTest").checked = myVar.startupLEDTest !== "0";
+					document.getElementById("firmware").textContent = myVar.firmwareVersion
+						? "Firmware " + myVar.firmwareVersion + " · " + myVar.language : "Firmware version unavailable";
+
 
 					updateDisplay(parseInt(myVar.modeid));
 					console.log(myVar);
@@ -551,6 +561,7 @@
 				cmdstr += nmEnd.value.replace(":", "-");
 				cmdstr += "-";
 				cmdstr += brightnessElmt.value;
+				cmdstr += "-" + (document.getElementById("StartupLEDTest").checked ? "1" : "0");
 				console.log(cmdstr);
 				sendCommand(cmdstr);
 				if(ckb_resetWifi.checked) {
